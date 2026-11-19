@@ -4,6 +4,7 @@ import uuid
 from django.db import models
 from django.conf import settings
 from django.core.validators import MinValueValidator
+from decimal import Decimal
 
 from shops.models import Shop
 from customers.models import Customer
@@ -41,7 +42,7 @@ class LedgerTransaction(models.Model):
     amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        validators=[MinValueValidator(0.01)]
+        validators=[MinValueValidator(Decimal("0.01"))]
     )
 
     description = models.TextField(blank=True)

@@ -34,6 +34,10 @@ class LedgerTransactionSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate_description(self, value):
+
+        return value.strip()
+
 
 class TransactionReversalSerializer(serializers.Serializer):
 
@@ -43,3 +47,25 @@ class TransactionReversalSerializer(serializers.Serializer):
         required=False,
         allow_blank=True
     )
+
+    def validate_description(self, value):
+
+        return value.strip()
+
+
+class TransactionSyncStatusSerializer(serializers.Serializer):
+
+    client_transaction_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+        max_length=50
+    )
+
+    def validate_client_transaction_ids(self, value):
+
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError(
+                "Duplicate transaction IDs are not allowed."
+            )
+
+        return value

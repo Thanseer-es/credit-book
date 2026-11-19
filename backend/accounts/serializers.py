@@ -1,4 +1,6 @@
 
+import re
+
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
@@ -19,6 +21,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Shopkeeper
+
         fields = [
             'id',
             'phone',
@@ -28,11 +31,28 @@ class RegisterSerializer(serializers.ModelSerializer):
         ]
 
     def validate_phone(self, value):
+
         value = value.strip()
+
+        if not re.fullmatch(r'[6-9]\d{9}', value):
+            raise serializers.ValidationError(
+                "Enter a valid 10-digit Indian mobile number."
+            )
 
         if Shopkeeper.objects.filter(phone=value).exists():
             raise serializers.ValidationError(
                 "This phone number is already registered."
+            )
+
+        return value
+
+    def validate_full_name(self, value):
+
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Full name cannot be empty."
             )
 
         return value
@@ -66,9 +86,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Shopkeeper
+
         fields = [
             'id',
             'phone',
             'full_name',
         ]
+
         read_only_fields = fields

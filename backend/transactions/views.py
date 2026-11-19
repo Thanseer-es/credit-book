@@ -1,6 +1,8 @@
 
 from decimal import Decimal
+import logging
 
+from django.db import IntegrityError, DatabaseError
 from django.db import transaction
 from django.db.models import Sum, Q
 from django.shortcuts import get_object_or_404
@@ -14,8 +16,13 @@ from rest_framework.views import APIView
 from shops.models import Shop
 from customers.models import Customer
 from .models import LedgerTransaction
-from .serializers import LedgerTransactionSerializer, TransactionReversalSerializer
+from .serializers import (
+    LedgerTransactionSerializer,
+    TransactionReversalSerializer,
+    TransactionSyncStatusSerializer
+)
 
+logger = logging.getLogger(__name__)
 
 def calculate_customer_balance(shop, customer):
 
@@ -331,3 +338,353 @@ class TransactionReversalAPIView(APIView):
             LedgerTransactionSerializer(reversal).data,
             status=status.HTTP_201_CREATED
         )
+
+
+
+class TransactionSyncAPIView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        transaction_items = request.data.get('transactions')
+
+        if not isinstance(transaction_items, list):
+            return Response(
+                {'detail': 'transactions must be a list.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(transaction_items) > 50:
+            return Response(
+                {'detail': 'Maximum 50 transactions per sync request.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        shop = get_object_or_404(
+            Shop,
+            owner=request.user
+        )
+
+        results = []
+
+        synced_count = 0
+        duplicate_count = 0
+        rejected_count = 0
+        conflict_count = 0
+        retryable_count = 0
+
+        for index, item in enumerate(transaction_items):
+
+            if not isinstance(item, dict):
+
+                results.append({
+                    'index': index,
+                    'status': 'rejected',
+                    'retryable': False,
+                    'detail': 'Transaction must be a JSON object.'
+                })
+
+                rejected_count += 1
+                continue
+
+            serializer = LedgerTransactionSerializer(data=item)
+
+            if not serializer.is_valid():
+
+                results.append({
+                    'index': index,
+                    'status': 'rejected',
+                    'retryable': False,
+                    'errors': serializer.errors
+                })
+
+                rejected_count += 1
+                continue
+
+            data = serializer.validated_data
+
+            customer_data = data['customer']
+            client_id = data['client_transaction_id']
+            transaction_type = data['transaction_type']
+            amount = data['amount']
+            description = data.get('description', '')
+
+            try:
+
+                result = None
+
+                with transaction.atomic():
+
+                    locked_shop = Shop.objects.select_for_update().get(
+                        id=shop.id
+                    )
+
+                    existing = LedgerTransaction.objects.filter(
+                        shop=locked_shop,
+                        client_transaction_id=client_id
+                    ).first()
+
+                    if existing:
+
+                        same_request = (
+                            existing.customer_id == customer_data.pk
+                            and existing.transaction_type == transaction_type
+                            and existing.amount == amount
+                            and existing.description == description
+                        )
+
+                        if same_request:
+
+                            result = {
+                                'index': index,
+                                'status': 'already_synced',
+                                'retryable': False,
+                                'transaction_id': str(existing.id)
+                            }
+
+                        else:
+
+                            result = {
+                                'index': index,
+                                'status': 'conflict',
+                                'retryable': False,
+                                'detail': (
+                                    'Client transaction ID was '
+                                    'already used with different details.'
+                                )
+                            }
+
+                    else:
+
+                        customer = Customer.objects.select_for_update().filter(
+                            id=customer_data.pk,
+                            shop=locked_shop,
+                            is_active=True
+                        ).first()
+
+                        if not customer:
+
+                            result = {
+                                'index': index,
+                                'status': 'rejected',
+                                'retryable': False,
+                                'detail': 'Customer not found or inactive.'
+                            }
+
+                        else:
+
+                            if transaction_type == 'PAYMENT':
+
+                                balance_data = calculate_customer_balance(
+                                    locked_shop,
+                                    customer
+                                )
+
+                                if amount > balance_data['balance']:
+
+                                    result = {
+                                        'index': index,
+                                        'status': 'rejected',
+                                        'retryable': False,
+                                        'detail': (
+                                            'Payment exceeds outstanding balance.'
+                                        )
+                                    }
+
+                            if result is None:
+
+                                saved_transaction = serializer.save(
+                                    shop=locked_shop,
+                                    customer=customer,
+                                    created_by=request.user
+                                )
+
+                                result = {
+                                    'index': index,
+                                    'status': 'synced',
+                                    'retryable': False,
+                                    'transaction_id': str(saved_transaction.id)
+                                }
+
+                # Count the result only after the database transaction
+                # has completed successfully.
+                results.append(result)
+
+                if result['status'] == 'synced':
+                    synced_count += 1
+
+                elif result['status'] == 'already_synced':
+                    duplicate_count += 1
+
+                elif result['status'] == 'conflict':
+                    conflict_count += 1
+
+                elif result['status'] == 'rejected':
+                    rejected_count += 1
+
+            except IntegrityError:
+
+                # A unique constraint may have been hit by a
+                # concurrent request. Check whether it was saved.
+                existing = LedgerTransaction.objects.filter(
+                    shop=shop,
+                    client_transaction_id=client_id
+                ).first()
+
+                if existing:
+
+                    same_request = (
+                        existing.customer_id == customer_data.pk
+                        and existing.transaction_type == transaction_type
+                        and existing.amount == amount
+                        and existing.description == description
+                    )
+
+                    if same_request:
+
+                        results.append({
+                            'index': index,
+                            'status': 'already_synced',
+                            'retryable': False,
+                            'transaction_id': str(existing.id)
+                        })
+
+                        duplicate_count += 1
+
+                    else:
+
+                        results.append({
+                            'index': index,
+                            'status': 'conflict',
+                            'retryable': False
+                        })
+
+                        conflict_count += 1
+
+                else:
+
+                    logger.exception(
+                        'Database constraint error during transaction sync.'
+                    )
+
+                    results.append({
+                        'index': index,
+                        'status': 'failed',
+                        'retryable': False,
+                        'detail': 'Database constraint error.'
+                    })
+
+                    rejected_count += 1
+
+            except DatabaseError:
+
+                logger.exception(
+                    'Temporary database error during transaction sync.'
+                )
+
+                results.append({
+                    'index': index,
+                    'status': 'failed',
+                    'retryable': True,
+                    'retry_after_seconds': 5,
+                    'detail': 'Temporary database error. Retry later.'
+                })
+
+                retryable_count += 1
+
+        return Response({
+
+            'message': 'Synchronization completed.',
+
+            'summary': {
+                'total': len(transaction_items),
+                'synced': synced_count,
+                'already_synced': duplicate_count,
+                'rejected': rejected_count,
+                'conflicts': conflict_count,
+                'retryable': retryable_count
+            },
+
+            'results': results
+
+        }, status=status.HTTP_200_OK)
+
+
+class TransactionSyncStatusAPIView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        serializer = TransactionSyncStatusSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        client_ids = serializer.validated_data[
+            'client_transaction_ids'
+        ]
+
+        shop = get_object_or_404(
+            Shop,
+            owner=request.user
+        )
+
+        # Only retrieve transactions belonging to this shop.
+        existing_transactions = LedgerTransaction.objects.filter(
+            shop=shop,
+            client_transaction_id__in=client_ids
+        ).select_related('customer')
+
+        # Build a lookup using the client-generated IDs.
+        transaction_map = {
+            str(item.client_transaction_id): item
+            for item in existing_transactions
+        }
+
+        results = []
+
+        for client_id in client_ids:
+
+            client_id_string = str(client_id)
+
+            existing = transaction_map.get(client_id_string)
+
+            if existing:
+
+                results.append({
+                    'client_transaction_id': client_id_string,
+                    'status': 'synced',
+                    'transaction_id': str(existing.id),
+                    'customer_id': str(existing.customer_id),
+                    'transaction_type': existing.transaction_type,
+                    'amount': existing.amount
+                })
+
+            else:
+
+                results.append({
+                    'client_transaction_id': client_id_string,
+                    'status': 'not_found',
+                    'transaction_id': None
+                })
+
+        return Response({
+
+            'total': len(results),
+
+            'synced': sum(
+                1 for item in results
+                if item['status'] == 'synced'
+            ),
+
+            'not_found': sum(
+                1 for item in results
+                if item['status'] == 'not_found'
+            ),
+
+            'results': results
+
+        })

@@ -23,12 +23,21 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+if not SECRET_KEY:
+    raise ValueError("DJANGO_SECRET_KEY is missing from .env")
 
-ALLOWED_HOSTS = []
+DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
+
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv(
+        'DJANGO_ALLOWED_HOSTS',
+        'localhost,127.0.0.1,10.0.2.2'
+    ).split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -51,12 +60,26 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+
     'django.contrib.sessions.middleware.SessionMiddleware',
+
+    'corsheaders.middleware.CorsMiddleware',
+
     'django.middleware.common.CommonMiddleware',
+
     'django.middleware.csrf.CsrfViewMiddleware',
+
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+
     'django.contrib.messages.middleware.MessageMiddleware',
+
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+    if origin.strip()
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -144,4 +167,5 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'EXCEPTION_HANDLER': 'config.exceptions.custom_exception_handler',
 }

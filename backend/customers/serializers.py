@@ -1,4 +1,6 @@
 
+import re
+
 from rest_framework import serializers
 from .models import Customer
 
@@ -26,8 +28,26 @@ class CustomerSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
 
-    def validate_phone(self, value):
+    def validate_name(self, value):
+
         value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Customer name cannot be empty."
+            )
+
+        return value
+
+    def validate_phone(self, value):
+
+        value = value.strip()
+
+        # Validate Indian mobile number
+        if not re.fullmatch(r'[6-9]\d{9}', value):
+            raise serializers.ValidationError(
+                "Enter a valid 10-digit Indian mobile number."
+            )
 
         shop = self.context.get('shop')
 

@@ -3,10 +3,13 @@ from django.urls import path
 from .views import (
     TransactionListCreateAPIView,
     CustomerBalanceAPIView,
-    TransactionReversalAPIView
+    TransactionReversalAPIView,
+    TransactionSyncAPIView,
+    TransactionSyncStatusAPIView
 )
 
 urlpatterns = [
+
     path(
         '',
         TransactionListCreateAPIView.as_view(),
@@ -18,10 +21,23 @@ urlpatterns = [
         CustomerBalanceAPIView.as_view(),
         name='customer-balance'
     ),
+
+    path(
+        '<uuid:transaction_id>/reverse/',
+        TransactionReversalAPIView.as_view(),
+        name='transaction-reverse'
+    ),
+
+    path(
+        'sync/',
+        TransactionSyncAPIView.as_view(),
+        name='transaction-sync'
+    ),
     
     path(
-    '<uuid:transaction_id>/reverse/',
-    TransactionReversalAPIView.as_view(),
-    name='transaction-reverse'
-),
+    'sync/status/',
+    TransactionSyncStatusAPIView.as_view(),
+    name='transaction-sync-status'
+    ),
+
 ]

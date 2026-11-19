@@ -12,6 +12,7 @@ from .serializers import (
 )
 
 
+
 class RegisterAPIView(APIView):
 
     permission_classes = [AllowAny]
@@ -20,23 +21,19 @@ class RegisterAPIView(APIView):
 
         serializer = RegisterSerializer(data=request.data)
 
-        if serializer.is_valid():
+        serializer.is_valid(raise_exception=True)
 
-            user = serializer.save()
+        user = serializer.save()
 
-            refresh = RefreshToken.for_user(user)
+        refresh = RefreshToken.for_user(user)
 
-            return Response({
-                "message": "Registration successful",
-                "user": UserProfileSerializer(user).data,
-                "refresh": str(refresh),
-                "access": str(refresh.access_token)
-            }, status=status.HTTP_201_CREATED)
+        return Response({
+            "message": "Registration successful",
+            "user": UserProfileSerializer(user).data,
+            "refresh": str(refresh),
+            "access": str(refresh.access_token)
+        }, status=status.HTTP_201_CREATED)
 
-        return Response(
-            serializer.errors,
-            status=status.HTTP_400_BAD_REQUEST
-        )
 
 
 class MeAPIView(APIView):
